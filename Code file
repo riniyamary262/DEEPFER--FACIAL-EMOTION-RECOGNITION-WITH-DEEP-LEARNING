@@ -1,0 +1,1094 @@
+# ============================================================================
+# SETUP AND IMPORTS
+# ============================================================================
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import random
+from tqdm import tqdm
+import warnings
+warnings.filterwarnings('ignore')
+
+# Deep Learning imports
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers, models
+from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
+
+# Set seed for reproducibility
+np.random.seed(42)
+tf.random.set_seed(42)
+
+print(f"TensorFlow version: {tf.__version__}")
+print(f"Keras version: {keras.__version__}")
+print("Setup Complete!")
+
+
+# ============================================================================
+# DATA EXPLORATION AND PREPROCESSING
+# ============================================================================
+
+def find_data_paths():
+    """Automatically find train and test paths"""
+    emotions = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
+    
+    # Possible paths to check
+    possible_paths = [
+        'archive-3/archive-3/train',
+        'archive-3/train',
+        './archive-3/archive-3/train',
+        './archive-3/train',
+        '../archive-3/archive-3/train',
+        '../archive-3/train',
+        'archive-3/archive-3/test',
+        'archive-3/test',
+        './archive-3/archive-3/test',
+        './archive-3/test',
+        '../archive-3/archive-3/test',
+        '../archive-3/test',
+    ]
+    
+    train_path = None
+    test_path = None
+    
+    # Check explicit paths first
+    for path in possible_paths:
+        if 'train' in path and os.path.exists(path):
+            # Check if it contains emotion folders
+            try:
+                contents = os.listdir(path)
+                if any(emotion in contents for emotion in emotions):
+                    train_path = path
+                    print(f"Found training data at: {path}")
+                    break
+            except:
+                pass
+        elif 'test' in path and os.path.exists(path):
+            try:
+                contents = os.listdir(path)
+                if any(emotion in contents for emotion in emotions):
+                    test_path = path
+                    print(f"Found test data at: {path}")
+                    break
+            except:
+                pass
+    
+    # If not found, search recursively
+    if train_path is None or test_path is None:
+        print("\nSearching recursively for data folders...")
+        for root, dirs, files in os.walk('.'):
+            if 'train' in dirs and train_path is None:
+                train_candidate = os.path.join(root, 'train')
+                try:
+                    contents = os.listdir(train_candidate)
+                    if any(emotion in contents for emotion in emotions):
+                        train_path = train_candidate
+                        print(f"Found training data at: {train_path}")
+                except:
+                    pass
+            if 'test' in dirs and test_path is None:
+                test_candidate = os.path.join(root, 'test')
+                try:
+                    contents = os.listdir(test_candidate)
+                    if any(emotion in contents for emotion in emotions):
+                        test_path = test_candidate
+                        print(f"Found test data at: {test_path}")
+                except:
+                    pass
+    
+    return train_path, test_path
+
+# Find the paths
+print("\n" + "="*50)
+print("FINDING DATA PATHS")
+print("="*50)
+
+train_path, test_path = find_data_paths()
+
+if train_path is None or test_path is None:
+    print("\nERROR: Could not find data folders!")
+    print("Please manually check the location of your data.")
+    print("Current directory:", os.getcwd())
+    print("\nContents of current directory:")
+    for item in os.listdir('.'):
+        print(f"  {item}")
+    raise SystemExit("Please place the data in the correct location and restart.")
+else:
+    print(f"\nUsing train path: {train_path}")
+    print(f"Using test path: {test_path}")
+
+# Define emotion classes
+emotions = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
+num_classes = len(emotions)
+img_size = 48
+
+print(f"\nEmotions: {emotions}")
+print(f"Number of classes: {num_classes}")
+print(f"Image size: {img_size}x{img_size}")
+
+
+# ============================================================================
+# DATA LOADING AND AUGMENTATION
+# ============================================================================
+
+def load_data_from_directory(data_path, emotions, img_size=48, max_images=None):
+    """
+    Load images and labels directly from directory structure
+    """
+    X = []
+    y = []
+    
+    if data_path is None or not os.path.exists(data_path):
+        print(f"Data path not found: {data_path}")
+        return np.array([]), np.array([])
+    
+    for emotion_idx, emotion in enumerate(emotions):
+        emotion_path = os.path.join(data_path, emotion)
+        if not os.path.exists(emotion_path):
+            print(f"Warning: {emotion_path} not found")
+            continue
+        
+        # Get all image files
+        image_files = [f for f in os.listdir(emotion_path) 
+                      if f.lower().endswith(('.jpg', '.png', '.jpeg', '.pgm', '.bmp'))]
+        
+        # Limit images if specified
+        if max_images:
+            image_files = image_files[:max_images]
+        
+        print(f"Loading {len(image_files)} images for {emotion}")
+        
+        for img_file in tqdm(image_files, desc=f"Loading {emotion}"):
+            try:
+                img_path = os.path.join(emotion_path, img_file)
+                img = load_img(img_path, color_mode='grayscale', target_size=(img_size, img_size))
+                img_array = img_to_array(img) / 255.0
+                X.append(img_array)
+                y.append(emotion_idx)
+            except Exception as e:
+                print(f"Error loading {img_file}: {e}")
+                continue
+    
+    if len(X) == 0:
+        print(f"No images loaded from {data_path}")
+        return np.array([]), np.array([])
+    
+    X = np.array(X)
+    y = np.array(y)
+    
+    print(f"Loaded {len(X)} images from {data_path}")
+    return X, y
+
+# Load data
+print("\n" + "="*50)
+print("LOADING DATA")
+print("="*50)
+
+print("\nLoading training data...")
+X_train, y_train = load_data_from_directory(train_path, emotions, img_size)
+
+print("\nLoading test data...")
+X_test, y_test = load_data_from_directory(test_path, emotions, img_size)
+
+if len(X_train) == 0:
+    print("\nERROR: No training data loaded!")
+    print("Please check your data paths.")
+    print(f"Train path: {train_path}")
+    print(f"Test path: {test_path}")
+    raise SystemExit("No data found. Please check the path.")
+
+print(f"\nData loaded successfully!")
+print(f"Training samples: {len(X_train)}")
+print(f"Test samples: {len(X_test)}")
+print(f"Image shape: {X_train[0].shape}")
+
+
+# ============================================================================
+# DATA SPLITTING AND PREPARATION
+# ============================================================================
+
+print("\n" + "="*50)
+print("PREPARING DATA")
+print("="*50)
+
+# Split training data into train and validation
+X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
+    X_train, y_train, test_size=0.1, random_state=42, stratify=y_train
+)
+
+print(f"\nData Split Complete:")
+print(f"Training samples: {len(X_train_split)}")
+print(f"Validation samples: {len(X_val_split)}")
+print(f"Test samples: {len(X_test)}")
+
+# Create data generators
+def create_generator(X, y, batch_size=32, augment=False):
+    """Create a data generator with optional augmentation"""
+    from tensorflow.keras.preprocessing.image import ImageDataGenerator
+    
+    if augment:
+        datagen = ImageDataGenerator(
+            rotation_range=30,
+            width_shift_range=0.2,
+            height_shift_range=0.2,
+            shear_range=0.2,
+            zoom_range=0.2,
+            horizontal_flip=True,
+            brightness_range=[0.8, 1.2]
+        )
+    else:
+        datagen = ImageDataGenerator()
+    
+    return datagen.flow(X, y, batch_size=batch_size)
+
+# Create generators
+train_generator = create_generator(X_train_split, y_train_split, batch_size=32, augment=True)
+validation_generator = create_generator(X_val_split, y_val_split, batch_size=32, augment=False)
+test_generator = create_generator(X_test, y_test, batch_size=32, augment=False)
+
+print(f"\nGenerators created successfully!")
+print(f"Training batches: {len(train_generator)}")
+print(f"Validation batches: {len(validation_generator)}")
+print(f"Test batches: {len(test_generator)}")
+
+# Calculate class weights
+class_weights = compute_class_weight(
+    class_weight='balanced',
+    classes=np.unique(y_train_split),
+    y=y_train_split
+)
+class_weight_dict = dict(enumerate(class_weights))
+print(f"\nClass weights: {class_weight_dict}")
+
+# ============================================================================
+# DATA VISUALIZATION
+# ============================================================================
+
+
+# ============================================================================
+# 1. DATA DISTRIBUTION VISUALIZATIONS
+# ============================================================================
+
+def plot_data_distribution(X_train, y_train, X_test, y_test, emotions):
+    """
+    Create comprehensive data distribution visualizations
+    """
+    fig = plt.figure(figsize=(20, 12))
+    
+    # 1.1 Training Set Distribution
+    ax1 = plt.subplot(2, 3, 1)
+    train_counts = np.bincount(y_train) if len(y_train) > 0 else np.zeros(len(emotions))
+    bars = ax1.bar(emotions, train_counts, color=sns.color_palette("viridis", len(emotions)))
+    ax1.set_title('Training Set Distribution', fontsize=14, fontweight='bold')
+    ax1.set_xlabel('Emotions', fontsize=12)
+    ax1.set_ylabel('Number of Images', fontsize=12)
+    ax1.tick_params(axis='x', rotation=45)
+    for bar, count in zip(bars, train_counts):
+        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 5, 
+                str(int(count)), ha='center', va='bottom', fontsize=10)
+    
+    # 1.2 Test Set Distribution
+    ax2 = plt.subplot(2, 3, 2)
+    test_counts = np.bincount(y_test) if len(y_test) > 0 else np.zeros(len(emotions))
+    bars = ax2.bar(emotions, test_counts, color=sns.color_palette("plasma", len(emotions)))
+    ax2.set_title('Test Set Distribution', fontsize=14, fontweight='bold')
+    ax2.set_xlabel('Emotions', fontsize=12)
+    ax2.set_ylabel('Number of Images', fontsize=12)
+    ax2.tick_params(axis='x', rotation=45)
+    for bar, count in zip(bars, test_counts):
+        ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, 
+                str(int(count)), ha='center', va='bottom', fontsize=10)
+    
+    # 1.3 Pie Chart - Training Set
+    ax3 = plt.subplot(2, 3, 3)
+    colors = sns.color_palette("Set3", len(emotions))
+    if np.sum(train_counts) > 0:
+        wedges, texts, autotexts = ax3.pie(train_counts, labels=emotions, autopct='%1.1f%%',
+                                            colors=colors, startangle=90)
+    else:
+        ax3.text(0.5, 0.5, 'No training data', ha='center', va='center')
+    ax3.set_title('Training Set Distribution (Pie Chart)', fontsize=14, fontweight='bold')
+    
+    # 1.4 Pie Chart - Test Set
+    ax4 = plt.subplot(2, 3, 4)
+    if np.sum(test_counts) > 0:
+        wedges, texts, autotexts = ax4.pie(test_counts, labels=emotions, autopct='%1.1f%%',
+                                            colors=colors, startangle=90)
+    else:
+        ax4.text(0.5, 0.5, 'No test data', ha='center', va='center')
+    ax4.set_title('Test Set Distribution (Pie Chart)', fontsize=14, fontweight='bold')
+    
+    # 1.5 Comparison Bar Chart
+    ax5 = plt.subplot(2, 3, 5)
+    x = np.arange(len(emotions))
+    width = 0.35
+    ax5.bar(x - width/2, train_counts, width, label='Training', color='steelblue')
+    ax5.bar(x + width/2, test_counts, width, label='Test', color='coral')
+    ax5.set_title('Train vs Test Distribution Comparison', fontsize=14, fontweight='bold')
+    ax5.set_xlabel('Emotions', fontsize=12)
+    ax5.set_ylabel('Number of Images', fontsize=12)
+    ax5.set_xticks(x)
+    ax5.set_xticklabels(emotions, rotation=45)
+    ax5.legend()
+    
+    # 1.6 Class Balance Ratio
+    ax6 = plt.subplot(2, 3, 6)
+    if np.max(train_counts) > 0:
+        balance_ratio = train_counts / train_counts.max()
+        bars = ax6.bar(emotions, balance_ratio, color=sns.color_palette("coolwarm", len(emotions)))
+        ax6.axhline(y=0.5, color='red', linestyle='--', label='50% Balance Threshold')
+        ax6.set_title('Class Balance Ratio (Training)', fontsize=14, fontweight='bold')
+        ax6.set_xlabel('Emotions', fontsize=12)
+        ax6.set_ylabel('Ratio to Max Class', fontsize=12)
+        ax6.set_ylim(0, 1.1)
+        ax6.tick_params(axis='x', rotation=45)
+        ax6.legend()
+        for bar, ratio in zip(bars, balance_ratio):
+            ax6.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+                    f'{ratio:.2f}', ha='center', va='bottom', fontsize=10)
+    else:
+        ax6.text(0.5, 0.5, 'No data available', ha='center', va='center')
+    
+    plt.suptitle('Comprehensive Data Distribution Analysis', fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.show()
+    
+    # Print statistics
+    print("\n" + "="*60)
+    print("DATA DISTRIBUTION STATISTICS")
+    print("="*60)
+    print(f"\nTotal Training Images: {len(X_train)}")
+    print(f"Total Test Images: {len(X_test)}")
+    print(f"Total Images: {len(X_train) + len(X_test)}")
+    if len(X_train) > 0:
+        print("\nTraining Set Distribution:")
+        for i, emotion in enumerate(emotions):
+            if i < len(train_counts):
+                print(f"  {emotion:10s}: {int(train_counts[i]):5d} images ({train_counts[i]/len(X_train)*100:.1f}%)")
+    if len(X_test) > 0:
+        print("\nTest Set Distribution:")
+        for i, emotion in enumerate(emotions):
+            if i < len(test_counts):
+                print(f"  {emotion:10s}: {int(test_counts[i]):5d} images ({test_counts[i]/len(X_test)*100:.1f}%)")
+
+# ============================================================================
+# 2. SAMPLE IMAGE VISUALIZATIONS
+# ============================================================================
+
+def plot_sample_images_grid(X, y, emotions, samples_per_class=3):
+    """
+    Display sample images for each emotion class
+    """
+    if len(X) == 0:
+        print("No images available to display")
+        return
+    
+    fig, axes = plt.subplots(len(emotions), samples_per_class, 
+                             figsize=(samples_per_class*3, len(emotions)*3))
+    
+    for i, emotion in enumerate(emotions):
+        # Get indices for this class
+        class_indices = np.where(y == i)[0]
+        
+        if len(class_indices) == 0:
+            # If no images for this class, show blank
+            for j in range(samples_per_class):
+                if len(emotions) == 1:
+                    ax = axes[j]
+                else:
+                    ax = axes[i, j]
+                ax.text(0.5, 0.5, 'No images', ha='center', va='center')
+                ax.axis('off')
+            continue
+            
+        # Select random samples
+        selected = np.random.choice(class_indices, 
+                                   min(samples_per_class, len(class_indices)), 
+                                   replace=False)
+        
+        for j, idx in enumerate(selected):
+            if len(emotions) == 1:
+                ax = axes[j]
+            else:
+                ax = axes[i, j]
+            
+            ax.imshow(X[idx].reshape(48, 48), cmap='gray')
+            ax.set_title(emotion, fontsize=10)
+            ax.axis('off')
+        
+        # Fill remaining subplots with blank
+        for j in range(len(selected), samples_per_class):
+            if len(emotions) == 1:
+                ax = axes[j]
+            else:
+                ax = axes[i, j]
+            ax.axis('off')
+    
+    plt.suptitle('Sample Images by Emotion Class', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+
+
+# ============================================================================
+# 3. IMAGE STATISTICS VISUALIZATIONS
+# ============================================================================
+
+def plot_image_statistics(X):
+    """
+    Analyze and visualize image statistics
+    """
+    if len(X) == 0:
+        print("No images available for statistics")
+        return
+    
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    axes = axes.flatten()
+    
+    # 3.1 Pixel Intensity Distribution
+    axes[0].hist(X.flatten(), bins=50, color='steelblue', alpha=0.7, edgecolor='black')
+    axes[0].set_title('Pixel Intensity Distribution', fontsize=14, fontweight='bold')
+    axes[0].set_xlabel('Pixel Intensity', fontsize=12)
+    axes[0].set_ylabel('Frequency', fontsize=12)
+    axes[0].axvline(np.mean(X), color='red', linestyle='--', label=f'Mean: {np.mean(X):.3f}')
+    axes[0].axvline(np.median(X), color='green', linestyle='--', label=f'Median: {np.median(X):.3f}')
+    axes[0].legend()
+    
+    # 3.2 Image Mean Values
+    image_means = np.mean(X.reshape(len(X), -1), axis=1)
+    axes[1].hist(image_means, bins=30, color='coral', alpha=0.7, edgecolor='black')
+    axes[1].set_title('Distribution of Image Mean Values', fontsize=14, fontweight='bold')
+    axes[1].set_xlabel('Mean Pixel Value', fontsize=12)
+    axes[1].set_ylabel('Number of Images', fontsize=12)
+    axes[1].axvline(np.mean(image_means), color='red', linestyle='--', 
+                   label=f'Mean: {np.mean(image_means):.3f}')
+    axes[1].legend()
+    
+    # 3.3 Image Standard Deviation
+    image_stds = np.std(X.reshape(len(X), -1), axis=1)
+    axes[2].hist(image_stds, bins=30, color='lightgreen', alpha=0.7, edgecolor='black')
+    axes[2].set_title('Distribution of Image Standard Deviation', fontsize=14, fontweight='bold')
+    axes[2].set_xlabel('Standard Deviation', fontsize=12)
+    axes[2].set_ylabel('Number of Images', fontsize=12)
+    axes[2].axvline(np.mean(image_stds), color='red', linestyle='--', 
+                   label=f'Mean: {np.mean(image_stds):.3f}')
+    axes[2].legend()
+    
+    # 3.4 Image Contrast (Range)
+    image_ranges = np.max(X.reshape(len(X), -1), axis=1) - np.min(X.reshape(len(X), -1), axis=1)
+    axes[3].hist(image_ranges, bins=30, color='plum', alpha=0.7, edgecolor='black')
+    axes[3].set_title('Distribution of Image Contrast (Range)', fontsize=14, fontweight='bold')
+    axes[3].set_xlabel('Intensity Range', fontsize=12)
+    axes[3].set_ylabel('Number of Images', fontsize=12)
+    axes[3].axvline(np.mean(image_ranges), color='red', linestyle='--', 
+                   label=f'Mean: {np.mean(image_ranges):.3f}')
+    axes[3].legend()
+    
+    # 3.5 Image Entropy (Complexity)
+    try:
+        from scipy.stats import entropy
+        image_entropy = []
+        for i in range(min(1000, len(X))):
+            hist, _ = np.histogram(X[i].flatten(), bins=20, range=(0, 1))
+            hist = hist / hist.sum()
+            image_entropy.append(entropy(hist))
+        
+        axes[4].hist(image_entropy, bins=20, color='gold', alpha=0.7, edgecolor='black')
+        axes[4].set_title('Image Complexity (Entropy)', fontsize=14, fontweight='bold')
+        axes[4].set_xlabel('Entropy', fontsize=12)
+        axes[4].set_ylabel('Number of Images', fontsize=12)
+        axes[4].axvline(np.mean(image_entropy), color='red', linestyle='--', 
+                       label=f'Mean: {np.mean(image_entropy):.3f}')
+        axes[4].legend()
+    except:
+        axes[4].text(0.5, 0.5, 'Entropy calculation not available', ha='center', va='center')
+        axes[4].set_title('Image Complexity', fontsize=14, fontweight='bold')
+    
+    # 3.6 Heatmap of Average Image
+    avg_image = np.mean(X, axis=0).reshape(48, 48)
+    im = axes[5].imshow(avg_image, cmap='gray')
+    axes[5].set_title('Average Image (All Classes)', fontsize=14, fontweight='bold')
+    axes[5].axis('off')
+    plt.colorbar(im, ax=axes[5], fraction=0.046, pad=0.04)
+    
+    plt.suptitle('Image Statistics and Properties', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+    
+    # Print statistics
+    print("\n" + "="*60)
+    print("IMAGE STATISTICS")
+    print("="*60)
+    print(f"Image Shape: {X.shape[1:]} (Height x Width x Channels)")
+    print(f"Total Pixels per Image: {X.shape[1] * X.shape[2]}")
+    print(f"Mean Pixel Intensity: {np.mean(X):.4f}")
+    print(f"Standard Deviation: {np.std(X):.4f}")
+    print(f"Min Pixel Intensity: {np.min(X):.4f}")
+    print(f"Max Pixel Intensity: {np.max(X):.4f}")
+
+
+# ============================================================================
+# 4. CLASS-SPECIFIC IMAGE STATISTICS
+# ============================================================================
+
+def plot_class_statistics(X, y, emotions):
+    """
+    Analyze statistics per emotion class
+    """
+    if len(X) == 0:
+        print("No images available for class statistics")
+        return
+    
+    num_classes = min(len(emotions), 6)  # Limit to 6 classes for display
+    
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    axes = axes.flatten()
+    
+    # 4.1 Mean Intensity per Class
+    class_means = []
+    for i in range(len(emotions)):
+        class_indices = np.where(y == i)[0]
+        if len(class_indices) > 0:
+            class_means.append(np.mean(X[class_indices]))
+        else:
+            class_means.append(0)
+    
+    axes[0].bar(emotions[:num_classes], class_means[:num_classes], 
+                color=sns.color_palette("viridis", num_classes))
+    axes[0].set_title('Mean Pixel Intensity per Class', fontsize=14, fontweight='bold')
+    axes[0].set_xlabel('Emotions', fontsize=12)
+    axes[0].set_ylabel('Mean Intensity', fontsize=12)
+    axes[0].tick_params(axis='x', rotation=45)
+    for i, v in enumerate(class_means[:num_classes]):
+        axes[0].text(i, v + 0.01, f'{v:.3f}', ha='center', va='bottom', fontsize=10)
+    
+    # 4.2 Standard Deviation per Class
+    class_stds = []
+    for i in range(len(emotions)):
+        class_indices = np.where(y == i)[0]
+        if len(class_indices) > 0:
+            class_stds.append(np.std(X[class_indices]))
+        else:
+            class_stds.append(0)
+    
+    axes[1].bar(emotions[:num_classes], class_stds[:num_classes], 
+                color=sns.color_palette("plasma", num_classes))
+    axes[1].set_title('Pixel Intensity Std per Class', fontsize=14, fontweight='bold')
+    axes[1].set_xlabel('Emotions', fontsize=12)
+    axes[1].set_ylabel('Standard Deviation', fontsize=12)
+    axes[1].tick_params(axis='x', rotation=45)
+    
+    # 4.3-4.5 Average Images per Class
+    for i in range(num_classes):
+        class_indices = np.where(y == i)[0]
+        if len(class_indices) > 0:
+            avg_img = np.mean(X[class_indices], axis=0).reshape(48, 48)
+            axes[i+2].imshow(avg_img, cmap='gray')
+            axes[i+2].set_title(f'Average: {emotions[i]}', fontsize=12)
+            axes[i+2].axis('off')
+        else:
+            axes[i+2].text(0.5, 0.5, f'No images for {emotions[i]}', 
+                          ha='center', va='center')
+            axes[i+2].axis('off')
+    
+    plt.suptitle('Class-Specific Statistics', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+    
+    # 4.6 Class-wise Image Variations
+    fig, axes = plt.subplots(len(emotions), 3, figsize=(9, len(emotions)*3))
+    
+    for i, emotion in enumerate(emotions):
+        class_indices = np.where(y == i)[0]
+        if len(class_indices) == 0:
+            # If no images, show blank
+            for j in range(3):
+                if len(emotions) == 1:
+                    ax = axes[j]
+                else:
+                    ax = axes[i, j]
+                ax.text(0.5, 0.5, 'No images', ha='center', va='center')
+                ax.axis('off')
+            continue
+            
+        # Select 3 random images from this class
+        selected = np.random.choice(class_indices, min(3, len(class_indices)), replace=False)
+        
+        for j, idx in enumerate(selected):
+            if len(emotions) == 1:
+                ax = axes[j]
+            else:
+                ax = axes[i, j]
+            
+            ax.imshow(X[idx].reshape(48, 48), cmap='gray')
+            ax.set_title(emotion, fontsize=10)
+            ax.axis('off')
+        
+        # Fill remaining subplots
+        for j in range(len(selected), 3):
+            if len(emotions) == 1:
+                ax = axes[j]
+            else:
+                ax = axes[i, j]
+            ax.axis('off')
+    
+    plt.suptitle('Sample Images per Class with Variations', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+# ============================================================================
+# 5. DIMENSIONALITY REDUCTION VISUALIZATIONS (FIXED)
+# ============================================================================
+
+def plot_dimensionality_reduction(X, y, emotions, n_samples=1000):
+    """
+    Visualize data in 2D using PCA and t-SNE
+    """
+    if len(X) == 0:
+        print("No images available for dimensionality reduction")
+        return
+    
+    # Sample data if too many points
+    if len(X) > n_samples:
+        indices = np.random.choice(len(X), n_samples, replace=False)
+        X_sample = X[indices]
+        y_sample = y[indices]
+    else:
+        X_sample = X
+        y_sample = y
+    
+    # Flatten images
+    X_flat = X_sample.reshape(len(X_sample), -1)
+    
+    # Standardize the data
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_flat)
+    
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # 5.1 PCA
+    print("Computing PCA...")
+    try:
+        pca = PCA(n_components=2, random_state=42)
+        X_pca = pca.fit_transform(X_scaled)
+        
+        scatter = axes[0].scatter(X_pca[:, 0], X_pca[:, 1], c=y_sample, 
+                                  cmap='tab10', alpha=0.6, s=30)
+        axes[0].set_title('PCA Visualization', fontsize=14, fontweight='bold')
+        axes[0].set_xlabel(f'First Principal Component (Explained Variance: {pca.explained_variance_ratio_[0]:.2%})', 
+                          fontsize=12)
+        axes[0].set_ylabel(f'Second Principal Component (Explained Variance: {pca.explained_variance_ratio_[1]:.2%})', 
+                          fontsize=12)
+        
+        # Create legend
+        legend_elements = [plt.Line2D([0], [0], marker='o', color='w', 
+                                      markerfacecolor=plt.cm.tab10(i/len(emotions)), 
+                                      label=emotions[i], markersize=10) 
+                           for i in range(len(emotions))]
+        axes[0].legend(handles=legend_elements, loc='best')
+        
+        # Print explained variance
+        print("\n" + "="*60)
+        print("PCA EXPLAINED VARIANCE")
+        print("="*60)
+        print(f"First component: {pca.explained_variance_ratio_[0]:.2%}")
+        print(f"Second component: {pca.explained_variance_ratio_[1]:.2%}")
+        print(f"Total explained: {sum(pca.explained_variance_ratio_):.2%}")
+        
+    except Exception as e:
+        axes[0].text(0.5, 0.5, f'PCA failed: {str(e)[:50]}...', 
+                    ha='center', va='center')
+        axes[0].set_title('PCA Visualization (Failed)', fontsize=14, fontweight='bold')
+        print(f"PCA Error: {e}")
+    
+    # 5.2 t-SNE
+    print("\nComputing t-SNE (this may take a moment)...")
+    try:
+        # Use smaller sample for t-SNE if needed
+        if len(X_scaled) > 1000:
+            tsne_indices = np.random.choice(len(X_scaled), 1000, replace=False)
+            X_tsne_data = X_scaled[tsne_indices]
+            y_tsne_data = y_sample[tsne_indices]
+        else:
+            X_tsne_data = X_scaled
+            y_tsne_data = y_sample
+        
+        tsne = TSNE(n_components=2, random_state=42, perplexity=30, n_iter=1000)
+        X_tsne = tsne.fit_transform(X_tsne_data)
+        
+        scatter = axes[1].scatter(X_tsne[:, 0], X_tsne[:, 1], c=y_tsne_data, 
+                                  cmap='tab10', alpha=0.6, s=30)
+        axes[1].set_title('t-SNE Visualization', fontsize=14, fontweight='bold')
+        axes[1].set_xlabel('t-SNE Dimension 1', fontsize=12)
+        axes[1].set_ylabel('t-SNE Dimension 2', fontsize=12)
+        axes[1].legend(handles=legend_elements, loc='best')
+        
+    except Exception as e:
+        axes[1].text(0.5, 0.5, f't-SNE failed: {str(e)[:50]}...', 
+                    ha='center', va='center')
+        axes[1].set_title('t-SNE Visualization (Failed)', fontsize=14, fontweight='bold')
+        print(f"t-SNE Error: {e}")
+    
+    plt.suptitle('Dimensionality Reduction Visualizations', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+
+
+# ============================================================================
+# 6. CONFUSION MATRIX VISUALIZATIONS
+# ============================================================================
+
+def plot_confusion_matrix_analysis(y_true, y_pred, emotions, model_name="Model"):
+    """
+    Create comprehensive confusion matrix visualizations
+    """
+    # Compute confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    
+    fig = plt.figure(figsize=(20, 12))
+    
+    # 6.1 Standard Confusion Matrix
+    ax1 = plt.subplot(2, 2, 1)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                xticklabels=emotions, yticklabels=emotions, ax=ax1)
+    ax1.set_title(f'{model_name} - Confusion Matrix', fontsize=14, fontweight='bold')
+    ax1.set_xlabel('Predicted', fontsize=12)
+    ax1.set_ylabel('Actual', fontsize=12)
+    
+    # 6.2 Normalized Confusion Matrix
+    cm_norm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+    cm_norm = np.nan_to_num(cm_norm)  # Handle division by zero
+    ax2 = plt.subplot(2, 2, 2)
+    sns.heatmap(cm_norm, annot=True, fmt='.2f', cmap='RdYlGn', 
+                xticklabels=emotions, yticklabels=emotions, ax=ax2, 
+                vmin=0, vmax=1)
+    ax2.set_title(f'{model_name} - Normalized Confusion Matrix', fontsize=14, fontweight='bold')
+    ax2.set_xlabel('Predicted', fontsize=12)
+    ax2.set_ylabel('Actual', fontsize=12)
+    
+    # 6.3 Per-Class Accuracy
+    per_class_acc = cm.diagonal() / np.maximum(cm.sum(axis=1), 1)
+    ax3 = plt.subplot(2, 2, 3)
+    bars = ax3.bar(emotions, per_class_acc, color=sns.color_palette("viridis", len(emotions)))
+    ax3.set_title(f'{model_name} - Per-Class Accuracy', fontsize=14, fontweight='bold')
+    ax3.set_xlabel('Emotions', fontsize=12)
+    ax3.set_ylabel('Accuracy', fontsize=12)
+    ax3.set_ylim(0, 1)
+    ax3.tick_params(axis='x', rotation=45)
+    for bar, acc in zip(bars, per_class_acc):
+        ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+                f'{acc:.2%}', ha='center', va='bottom', fontsize=10)
+    
+    # 6.4 Classification Metrics Heatmap
+    try:
+        report = classification_report(y_true, y_pred, target_names=emotions, output_dict=True)
+        
+        # Extract metrics for each class
+        precision = []
+        recall = []
+        f1_score = []
+        for emotion in emotions:
+            if emotion in report:
+                precision.append(report[emotion]['precision'])
+                recall.append(report[emotion]['recall'])
+                f1_score.append(report[emotion]['f1-score'])
+            else:
+                precision.append(0)
+                recall.append(0)
+                f1_score.append(0)
+        
+        metrics_df = pd.DataFrame({
+            'Precision': precision,
+            'Recall': recall,
+            'F1-Score': f1_score
+        }, index=emotions)
+        
+        ax4 = plt.subplot(2, 2, 4)
+        sns.heatmap(metrics_df.T, annot=True, fmt='.3f', cmap='coolwarm', 
+                    cbar_kws={'label': 'Score'}, ax=ax4, vmin=0, vmax=1)
+        ax4.set_title(f'{model_name} - Classification Metrics', fontsize=14, fontweight='bold')
+        ax4.set_xlabel('Emotions', fontsize=12)
+        ax4.set_ylabel('Metric', fontsize=12)
+    except Exception as e:
+        ax4 = plt.subplot(2, 2, 4)
+        ax4.text(0.5, 0.5, f'Metrics not available', ha='center', va='center')
+        ax4.set_title(f'{model_name} - Classification Metrics', fontsize=14, fontweight='bold')
+        print(f"Metrics error: {e}")
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print metrics summary
+    print("\n" + "="*60)
+    print(f"CLASSIFICATION REPORT - {model_name}")
+    print("="*60)
+    print(classification_report(y_true, y_pred, target_names=emotions))
+    
+    # Overall accuracy
+    accuracy = np.sum(y_true == y_pred) / len(y_true) if len(y_true) > 0 else 0
+    print(f"\nOverall Accuracy: {accuracy:.4f} ({accuracy:.2%})")
+
+
+
+# ============================================================================
+# Run all visualizations (if data is available)
+# ============================================================================
+
+print("="*60)
+print("GENERATING VISUALIZATIONS")
+print("="*60)
+
+# Check if data exists
+if 'X_train' in locals() and len(X_train) > 0:
+    print(f"\nData found: {len(X_train)} training images, {len(X_test)} test images")
+    
+    # 1. Data Distribution
+    print("\n1. Generating Data Distribution Visualizations...")
+    plot_data_distribution(X_train, y_train, X_test, y_test, emotions)
+    
+    # 2. Sample Images
+    print("\n2. Generating Sample Images Grid...")
+    plot_sample_images_grid(X_train, y_train, emotions, samples_per_class=3)
+    
+    # 3. Image Statistics
+    print("\n3. Generating Image Statistics...")
+    plot_image_statistics(X_train)
+    
+    # 4. Class Statistics
+    print("\n4. Generating Class Statistics...")
+    plot_class_statistics(X_train, y_train, emotions)
+    
+    # 5. Dimensionality Reduction
+    print("\n5. Generating Dimensionality Reduction Visualizations...")
+    plot_dimensionality_reduction(X_train, y_train, emotions, n_samples=500)
+    
+    # 6. Confusion Matrix (if model exists)
+    if 'cnn_model' in locals() and cnn_model is not None:
+        print("\n6. Generating Confusion Matrix Analysis...")
+        y_pred = np.argmax(cnn_model.predict(X_test, verbose=0), axis=1)
+        plot_confusion_matrix_analysis(y_test, y_pred, emotions, "CNN Model")
+    
+    # 7. Summary Dashboard
+    print("\n7. Generating Summary Dashboard...")
+    if 'history_cnn' in locals():
+        create_summary_dashboard(X_train, y_train, X_test, y_test, emotions, history_cnn, cnn_model)
+    else:
+        create_summary_dashboard(X_train, y_train, X_test, y_test, emotions, None, cnn_model)
+    
+    print("\n" + "="*60)
+    print("ALL VISUALIZATIONS COMPLETED SUCCESSFULLY!")
+    print("="*60)
+else:
+    print("No data found. Please load your data first.")
+
+# ============================================================================
+# VISUALIZE SAMPLE IMAGES
+# ============================================================================
+
+def plot_sample_images(X, y, num_samples=7):
+    """Plot sample images from the dataset"""
+    if len(X) == 0:
+        print("No images to display")
+        return
+    
+    fig, axes = plt.subplots(1, min(num_samples, len(X)), figsize=(15, 3))
+    if num_samples == 1:
+        axes = [axes]
+    
+    indices = np.random.choice(len(X), min(num_samples, len(X)), replace=False)
+    
+    for i, idx in enumerate(indices):
+        img_display = X[idx].reshape(img_size, img_size)
+        axes[i].imshow(img_display, cmap='gray')
+        axes[i].set_title(f'{emotions[y[idx]]}')
+        axes[i].axis('off')
+    
+    plt.suptitle('Sample Images with Labels', fontsize=14)
+    plt.tight_layout()
+    plt.show()
+
+print("\n" + "="*50)
+print("VISUALIZING DATA")
+print("="*50)
+
+print("Sample images from training set:")
+plot_sample_images(X_train_split, y_train_split)
+
+print("\nSample images from test set:")
+plot_sample_images(X_test, y_test)
+
+# Show class distribution
+fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+# Training distribution
+unique, counts = np.unique(y_train_split, return_counts=True)
+axes[0].bar([emotions[i] for i in unique], counts)
+axes[0].set_title('Training Set Distribution')
+axes[0].set_xlabel('Emotions')
+axes[0].set_ylabel('Count')
+axes[0].tick_params(axis='x', rotation=45)
+
+# Validation distribution
+unique, counts = np.unique(y_val_split, return_counts=True)
+axes[1].bar([emotions[i] for i in unique], counts)
+axes[1].set_title('Validation Set Distribution')
+axes[1].set_xlabel('Emotions')
+axes[1].set_ylabel('Count')
+axes[1].tick_params(axis='x', rotation=45)
+
+# Test distribution
+unique, counts = np.unique(y_test, return_counts=True)
+axes[2].bar([emotions[i] for i in unique], counts)
+axes[2].set_title('Test Set Distribution')
+axes[2].set_xlabel('Emotions')
+axes[2].set_ylabel('Count')
+axes[2].tick_params(axis='x', rotation=45)
+
+plt.tight_layout()
+plt.show()
+
+
+# ============================================================================
+# BUILD CNN MODEL
+# ============================================================================
+
+def create_cnn_model():
+    """Create a CNN model optimized for 48x48 images"""
+    model = models.Sequential([
+        # First Convolutional Block
+        layers.Conv2D(32, (3, 3), activation='relu', padding='same', input_shape=(img_size, img_size, 1)),
+        layers.BatchNormalization(),
+        layers.Conv2D(32, (3, 3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D((2, 2)),
+        layers.Dropout(0.25),
+        
+        # Second Convolutional Block
+        layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D((2, 2)),
+        layers.Dropout(0.25),
+        
+        # Third Convolutional Block
+        layers.Conv2D(128, (3, 3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.Conv2D(128, (3, 3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D((2, 2)),
+        layers.Dropout(0.25),
+        
+        # Fourth Convolutional Block
+        layers.Conv2D(256, (3, 3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.Conv2D(256, (3, 3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D((2, 2)),
+        layers.Dropout(0.25),
+        
+        # Global Average Pooling
+        layers.GlobalAveragePooling2D(),
+        
+        # Fully Connected Layers
+        layers.Dense(256, activation='relu'),
+        layers.BatchNormalization(),
+        layers.Dropout(0.5),
+        layers.Dense(128, activation='relu'),
+        layers.BatchNormalization(),
+        layers.Dropout(0.5),
+        layers.Dense(num_classes, activation='softmax')
+    ])
+    
+    return model
+
+print("\n" + "="*50)
+print("CREATING CNN MODEL")
+print("="*50)
+
+cnn_model = create_cnn_model()
+
+cnn_model.compile(
+    optimizer=keras.optimizers.Adam(learning_rate=0.001),
+    loss='sparse_categorical_crossentropy',
+    metrics=['accuracy']
+)
+
+print("\nCNN Model Architecture:")
+cnn_model.summary()
+
+
+# ============================================================================
+# TRAIN CNN MODEL
+# ============================================================================
+
+print("\n" + "="*50)
+print("TRAINING CNN MODEL")
+print("="*50)
+
+callbacks = [
+    EarlyStopping(patience=15, restore_best_weights=True, verbose=1),
+    ModelCheckpoint('best_cnn_model.h5', save_best_only=True, verbose=1),
+    ReduceLROnPlateau(factor=0.5, patience=5, min_lr=1e-7, verbose=1)
+]
+
+try:
+    history_cnn = cnn_model.fit(
+        train_generator,
+        steps_per_epoch=len(train_generator),
+        epochs=50,
+        validation_data=validation_generator,
+        validation_steps=len(validation_generator),
+        callbacks=callbacks,
+        class_weight=class_weight_dict,
+        verbose=1
+    )
+    print("\nCNN Model Training Complete!")
+    cnn_model.save('final_cnn_model.h5')
+    print("Model saved as 'final_cnn_model.h5'")
+    
+except Exception as e:
+    print(f"Error during training: {e}")
+    history_cnn = None
+
+# ============================================================================
+# MODEL EVAULATION
+# ============================================================================
+
+if history_cnn is not None:
+    print("\n" + "="*50)
+    print("EVALUATING CNN MODEL")
+    print("="*50)
+    
+    # Test evaluation
+    test_loss, test_acc = cnn_model.evaluate(X_test, y_test, verbose=0)
+    print(f"Test Accuracy: {test_acc:.4f}")
+    print(f"Test Loss: {test_loss:.4f}")
+    
+    # Predictions
+    y_pred = np.argmax(cnn_model.predict(X_test, verbose=0), axis=1)
+    
+    # Classification Report
+    print("\nClassification Report:")
+    print(classification_report(y_test, y_pred, target_names=emotions))
+    
+    # Confusion Matrix
+    cm = confusion_matrix(y_test, y_pred)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                xticklabels=emotions, yticklabels=emotions)
+    plt.title('CNN Model - Confusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.show()
+
+print("\n" + "="*60)
+print("PROJECT COMPLETED SUCCESSFULLY!")
+print("="*60)
