@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeepFER - Emotion Recognition</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 800px; 
+            margin: 0 auto; 
+            padding: 20px;
+            background: #f0f4f8;
+        }
+        .container { 
+            background: white; 
+            padding: 30px; 
+            border-radius: 15px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        h1 { 
+            color: #2c3e50; 
+            text-align: center; 
+        }
+        .upload-area {
+            border: 3px dashed #3498db;
+            padding: 40px;
+            text-align: center;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .upload-area:hover {
+            background: #ebf5fb;
+            border-color: #2980b9;
+        }
+        #preview { 
+            max-width: 300px; 
+            margin: 20px auto; 
+            display: none; 
+        }
+        #preview img { 
+            max-width: 100%; 
+            border-radius: 10px;
+        }
+        #results {
+            margin-top: 20px;
+            padding: 20px;
+            border-radius: 10px;
+            background: #f8f9fa;
+            display: none;
+        }
+        .emotion-display {
+            text-align: center;
+            padding: 20px;
+        }
+        .emotion-display .icon { 
+            font-size: 4rem; 
+        }
+        .emotion-display .label { 
+            font-size: 2rem; 
+            font-weight: bold; 
+            margin: 10px 0;
+        }
+        .confidence {
+            color: #6c757d;
+            font-size: 1.1rem;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 5px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            border-radius: 10px;
+            transition: width 1s ease;
+            background: linear-gradient(90deg, #3498db, #2ecc71);
+        }
+        .emotion-row {
+            display: flex;
+            align-items: center;
+            margin: 8px 0;
+        }
+        .emotion-row .name {
+            width: 80px;
+            font-weight: 500;
+        }
+        .emotion-row .value {
+            width: 60px;
+            text-align: right;
+            font-weight: bold;
+        }
+        .btn {
+            padding: 10px 30px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: background 0.3s;
+        }
+        .btn:hover {
+            background: #2980b9;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>😊 DeepFER Emotion Recognition</h1>
+        <p style="text-align: center; color: #6c757d;">Upload a face image to detect emotion</p>
+        
+        <div class="upload-area" id="dropZone">
+            <p>📁 Drag & drop an image here</p>
+            <p>or</p>
+            <button class="btn" onclick="document.getElementById('fileInput').click()">
+                Choose Image
+            </button>
+            <input type="file" id="fileInput" accept="image/*" style="display:none">
+        </div>
+        
+        <div id="preview">
+            <img id="previewImg" alt="Preview">
+        </div>
+        
+        <div id="loading" style="display:none; text-align:center;">
+            <div class="spinner"></div>
+            <p>Analyzing emotion...</p>
+        </div>
+        
+        <div id="results">
+            <div class="emotion-display">
+                <div class="icon" id="emotionIcon">😐</div>
+                <div class="label" id="emotionLabel">Neutral</div>
+                <div class="confidence">Confidence: <span id="confidenceValue">0%</span></div>
+            </div>
+            <div id="emotionBars"></div>
+            <button class="btn" style="width:100%; margin-top:15px;" onclick="resetApp()">
+                Analyze Another Image
+            </button>
+        </div>
+    </div>
+    
+    <script>
+        const EMOTION_ICONS = {
+            'angry': '😠',
+            'disgust': '🤢',
+            'fear': '😨',
+            'happy': '😊',
+            'neutral': '😐',
+            'sad': '😢',
+            'surprise': '😲'
+        };
+        
+        const EMOTION_COLORS = {
+            'angry': '#dc3545',
+            'disgust': '#198754',
+            'fear': '#ffc107',
+            'happy': '#0dcaf0',
+            'neutral': '#6c757d',
+            'sad': '#0d6efd',
+            'surprise': '#fd7e14'
+        };
+        
+        // Get elements
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const preview = document.getElementById('preview');
+        const previewImg = document.getElementById('previewImg');
+        const loading = document.getElementById('loading');
+        const results = document.getElementById('results');
+        const emotionIcon = document.getElementById('emotionIcon');
+        const emotionLabel = document.getElementById('emotionLabel');
+        const confidenceValue = document.getElementById('confidenceValue');
+        const emotionBars = document.getElementById('emotionBars');
+        
+        // Event listeners
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.style.background = '#ebf5fb';
+        });
+        
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.style.background = '';
+        });
+        
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.style.background = '';
+            if (e.dataTransfer.files.length > 0) {
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+        
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+        
+        dropZone.addEventListener('click', () => {
+            fileInput.click();
+        });
+        
+        function handleFile(file) {
+            if (!file.type.startsWith('image/')) {
+                alert('Please upload an image file.');
+                return;
+            }
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                previewImg.src = e.target.result;
+                preview.style.display = 'block';
+                dropZone.style.display = 'none';
+                sendForPrediction(e.target.result);
+            };
+            reader.readAsDataURL(file);
+        }
+        
+        function sendForPrediction(imageData) {
+            loading.style.display = 'block';
+            results.style.display = 'none';
+            
+            // For a real implementation, send to backend
+            // For demo, simulate prediction
+            setTimeout(() => {
+                // Simulate random emotion
+                const emotions = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise'];
+                const detected = emotions[Math.floor(Math.random() * emotions.length)];
+                const confidence = 0.6 + Math.random() * 0.35;
+                
+                // Generate random probabilities
+                const probabilities = {};
+                let remaining = 1;
+                emotions.forEach((emotion, i) => {
+                    if (i === emotions.length - 1) {
+                        probabilities[emotion] = remaining;
+                    } else {
+                        const val = Math.random() * remaining * 0.5 + 0.01;
+                        probabilities[emotion] = val;
+                        remaining -= val;
+                    }
+                });
+                probabilities[detected] += remaining;
+                
+                displayResults(detected, confidence, probabilities);
+            }, 1500);
+        }
+        
+        function displayResults(emotion, confidence, probabilities) {
+            loading.style.display = 'none';
+            results.style.display = 'block';
+            
+            // Update display
+            emotionIcon.textContent = EMOTION_ICONS[emotion] || '😐';
+            emotionLabel.textContent = emotion.charAt(0).toUpperCase() + emotion.slice(1);
+            confidenceValue.textContent = (confidence * 100).toFixed(1) + '%';
+            
+            // Update emotion bars
+            emotionBars.innerHTML = '';
+            const sorted = Object.entries(probabilities).sort((a, b) => b[1] - a[1]);
+            
+            sorted.forEach(([emotionName, prob]) => {
+                const percent = prob * 100;
+                const isDetected = emotionName === emotion;
+                const color = isDetected ? '#3498db' : '#6c757d';
+                
+                const row = document.createElement('div');
+                row.className = 'emotion-row';
+                row.innerHTML = `
+                    <span class="name">${emotionName}</span>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width:${percent}%; background:${color}; ${isDetected ? 'border:2px solid #2980b9;' : ''}"></div>
+                    </div>
+                    <span class="value">${percent.toFixed(1)}%</span>
+                `;
+                emotionBars.appendChild(row);
+            });
+        }
+        
+        function resetApp() {
+            preview.style.display = 'none';
+            dropZone.style.display = 'block';
+            results.style.display = 'none';
+            fileInput.value = '';
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    </script>
+</body>
+</html>
